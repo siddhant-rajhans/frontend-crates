@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use super::minimax_m2::{adapt_minimax_m2_thinking_template_source, is_minimax_m2_template_source};
 use super::tokcfg::{
-    ChatTemplate, fromjson, python_formatter, python_methods, python_string, python_trim,
-    raise_exception, strftime_now, tojson,
+    ChatTemplate, fromjson, python_format, python_formatter, python_methods, python_string,
+    python_trim, raise_exception, strftime_now, tojson,
 };
 use super::{
     ChatTemplateContentFormat, ContextMixins, HfTokenizerConfigJsonFormatter, JinjaEnvironment,
@@ -748,6 +748,7 @@ impl HfTokenizerConfigJsonFormatter {
 
         env.add_filter("tojson", tojson);
         env.add_filter("string", python_string);
+        env.add_filter("format", python_format);
         env.set_formatter(python_formatter);
 
         // Templates that round-trip tool call `arguments` (a JSON string) back into an

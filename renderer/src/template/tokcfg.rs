@@ -9,13 +9,14 @@ use chrono::{DateTime, Local};
 use either::Either;
 use std::borrow::Cow;
 
-use minijinja::value::{Kwargs, ObjectRepr, StringInput, ValueKind, from_args};
+use minijinja::value::{Kwargs, ObjectRepr, Rest, StringInput, ValueKind, from_args};
 use minijinja::{Error, ErrorKind, Output, State, Value, escape_formatter};
 use serde::ser::Error as _;
 use serde::{Deserialize, Serialize};
 
 use crate::python::{
-    PyJsonFormatter, is_python_space, python_float_repr, python_split_whitespace, python_splitlines,
+    PyJsonFormatter, is_python_space, python_container_str, python_float_repr,
+    python_split_whitespace, python_splitlines,
 };
 
 #[allow(dead_code)]
@@ -215,7 +216,7 @@ fn python_float_str(value: &Value) -> Option<String> {
 /// (`join`, `replace`, ...) use minijinja's spelling, so `'x' ~ 1e-6` and
 /// `[1e-6] | join` still render `0.000001`.
 pub fn python_formatter(out: &mut Output, state: &State, value: &Value) -> Result<(), Error> {
-    match python_float_str(value) {
+    match python_float_str(value).or_else(|| python_container_str(value)) {
         Some(text) => out.write_str(&text).map_err(Error::from),
         None => escape_formatter(out, state, value),
     }
@@ -224,10 +225,24 @@ pub fn python_formatter(out: &mut Output, state: &State, value: &Value) -> Resul
 /// The `string` filter with Python `str` floats, matching [`python_formatter`];
 /// other values go to the builtin.
 pub fn python_string(state: &State, value: &Value) -> Result<Value, Error> {
-    match python_float_str(value) {
+    match python_float_str(value).or_else(|| python_container_str(value)) {
         Some(text) => Ok(Value::from(text)),
         None => minijinja::filters::string(state, value),
     }
+}
+
+/// The `format` filter with Python's `str()` of floats, dicts and lists, which is
+/// what `%s` writes in Python; other arguments go to the builtin unchanged.
+pub fn python_format(state: &State, format_str: &Value, args: Rest<Value>) -> Result<Value, Error> {
+    let args = args
+        .iter()
+        .map(|arg| {
+            python_float_str(arg)
+                .or_else(|| python_container_str(arg))
+                .map_or_else(|| arg.clone(), Value::from)
+        })
+        .collect();
+    minijinja::filters::format(state, format_str, Rest(args))
 }
 
 /// minijinja-contrib's pycompat string methods, with Python's whitespace where

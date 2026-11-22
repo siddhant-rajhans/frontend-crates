@@ -346,8 +346,125 @@ pub(crate) fn python_splitlines(s: &str, keepends: bool) -> Vec<&str> {
     lines
 }
 
+/// Python's `str()` of a dict or list: `repr()` of each item, so the strings inside
+/// get Python's quotes and escapes. `None` for any other value, whose spelling
+/// MiniJinja already shares with Python (`True`, `None`) or `python_float_repr` gives.
+pub(crate) fn python_container_str(value: &minijinja::Value) -> Option<String> {
+    use minijinja::value::ValueKind;
+    if !matches!(value.kind(), ValueKind::Map | ValueKind::Seq) {
+        return None;
+    }
+    let mut out = String::new();
+    write_python_repr(&mut out, value);
+    Some(out)
+}
+
+fn write_python_repr(out: &mut String, value: &minijinja::Value) {
+    use minijinja::value::ValueKind;
+    use std::fmt::Write;
+    match value.kind() {
+        ValueKind::String => write_python_str_repr(out, value.as_str().unwrap_or_default()),
+        ValueKind::Map | ValueKind::Seq => {
+            let map = value.kind() == ValueKind::Map;
+            out.push(if map { '{' } else { '[' });
+            for (i, item) in value.try_iter().into_iter().flatten().enumerate() {
+                if i > 0 {
+                    out.push_str(", ");
+                }
+                write_python_repr(out, &item);
+                if map {
+                    out.push_str(": ");
+                    write_python_repr(out, &value.get_item(&item).unwrap_or_default());
+                }
+            }
+            out.push(if map { '}' } else { ']' });
+        }
+        ValueKind::Number if !value.is_integer() => {
+            let float = f64::try_from(value.clone()).unwrap_or(f64::NAN);
+            out.push_str(&python_float_repr(float));
+        }
+        _ => {
+            let _ = write!(out, "{value}");
+        }
+    }
+}
+
+/// Python's `repr()` of a string: single quotes unless the text holds a single quote
+/// and no double quote, and escapes for backslashes and unprintable characters.
+fn write_python_str_repr(out: &mut String, s: &str) {
+    use std::fmt::Write;
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if is_python_printable(c) => out.push(c),
+            c if (c as u32) < 0x100 => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c if (c as u32) < 0x10000 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => {
+                let _ = write!(out, "\\U{:08x}", c as u32);
+            }
+        }
+    }
+    out.push(quote);
+}
+
+/// Python's `str.isprintable` for one character, without Unicode's table of
+/// unassigned code points: control characters, separators other than the space,
+/// format characters and private-use characters are not printable.
+fn is_python_printable(c: char) -> bool {
+    if c == ' ' {
+        return true;
+    }
+    if c.is_control() || c.is_whitespace() {
+        return false;
+    }
+    !matches!(
+        c as u32,
+        0xAD | 0x600..=0x605
+            | 0x61C
+            | 0x6DD
+            | 0x70F
+            | 0x890..=0x891
+            | 0x8E2
+            | 0x180E
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x2064
+            | 0x2066..=0x206F
+            | 0xFEFF
+            | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0001
+            | 0xE0020..=0xE007F
+            | 0xE000..=0xF8FF
+            | 0xF0000..=0xFFFFD
+            | 0x100000..=0x10FFFD
+    )
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
